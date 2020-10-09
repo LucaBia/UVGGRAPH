@@ -114,7 +114,9 @@ class Raytracer(object):
 
         self.scene = []
 
-        self.pointLight = None
+        self.pointLights = []
+
+        self.dirLight = None
         self.ambientLight = None
 
         self.envmap = None
@@ -303,15 +305,15 @@ class Raytracer(object):
                                 material.diffuse[0] / 255])
 
         ambientColor = np.array([0,0,0])
-        diffuseColor = np.array([0,0,0])
-        specColor = np.array([0,0,0])
+        dirLightColor = np.array([0,0,0])
+        pLightColor = np.array([0,0,0])
+        
 
         reflectColor = np.array([0,0,0])
         refractColor = np.array([0,0,0])
 
         finalColor = np.array([0,0,0])
 
-        shadow_intensity = 0
 
         # Direccion de vista
         view_dir = np.subtract(self.camPosition, intersect.point)
@@ -322,35 +324,83 @@ class Raytracer(object):
                                      self.ambientLight.strength * self.ambientLight.color[1] / 255,
                                      self.ambientLight.strength * self.ambientLight.color[0] / 255])
 
-        if self.pointLight:
+        if self.dirLight:
+            diffuseColor = np.array([0,0,0])
+            specColor = np.array([0,0,0])
+            shadow_intensity = 0
+
             # Sacamos la direccion de la luz para este punto
-            light_dir = np.subtract(self.pointLight.position, intersect.point)
-            light_dir = light_dir / np.linalg.norm(light_dir)
+            light_dir = np.array(self.dirLight.direction) * -1
 
             # Calculamos el valor del diffuse color
-            intensity = self.pointLight.intensity * max(0, np.dot(light_dir, intersect.normal))
-            diffuseColor = np.array([intensity * self.pointLight.color[2] / 255,
-                                     intensity * self.pointLight.color[1] / 255,
-                                     intensity * self.pointLight.color[2] / 255])
+            intensity = self.dirLight.intensity * max(0, np.dot(light_dir, intersect.normal))
+            diffuseColor = np.array([intensity * self.dirLight.color[2] / 255,
+                                     intensity * self.dirLight.color[1] / 255,
+                                     intensity * self.dirLight.color[0] / 255])
 
             # Iluminacion especular
             reflect = reflectVector(intersect.normal, light_dir) # Reflejar el vector de luz
 
             # spec_intensity: lightIntensity * ( view_dir dot reflect) ** especularidad
-            spec_intensity = self.pointLight.intensity * (max(0, np.dot(view_dir, reflect)) ** material.spec)
-            specColor = np.array([spec_intensity * self.pointLight.color[2] / 255,
-                                  spec_intensity * self.pointLight.color[1] / 255,
-                                  spec_intensity * self.pointLight.color[0] / 255])
+            spec_intensity = self.dirLight.intensity * (max(0, np.dot(view_dir, reflect)) ** material.spec)
+            specColor = np.array([spec_intensity * self.dirLight.color[2] / 255,
+                                  spec_intensity * self.dirLight.color[1] / 255,
+                                  spec_intensity * self.dirLight.color[0] / 255])
 
 
             shadMat, shadInter = self.scene_intercept(intersect.point,  light_dir, intersect.sceneObject)
-            if shadInter is not None and shadInter.distance < np.linalg.norm(np.subtract(self.pointLight.position, intersect.point)):
+            if shadInter is not None:
                 shadow_intensity = 1
+
+            dirLightColor = (1 - shadow_intensity) * (diffuseColor + specColor)
+
+
+        for pointLight in self.pointLights:
+            diffuseColor = np.array([0,0,0])
+            specColor = np.array([0,0,0])
+            shadow_intensity = 0
+
+
+            # Sacamos la direccion de la luz para este punto
+            light_dir = np.subtract(pointLight.position, intersect.point)
+            light_dir = light_dir / np.linalg.norm(light_dir)
+
+            # Calculamos el valor del diffuse color
+            intensity = pointLight.intensity * max(0, np.dot(light_dir, intersect.normal))
+            diffuseColor = np.array([intensity * pointLight.color[2] / 255,
+                                     intensity * pointLight.color[1] / 255,
+                                     intensity * pointLight.color[0] / 255])
+
+            # Iluminacion especular
+            reflect = reflectVector(intersect.normal, light_dir) # Reflejar el vector de luz
+
+            # spec_intensity: lightIntensity * ( view_dir dot reflect) ** especularidad
+            spec_intensity = pointLight.intensity * (max(0, np.dot(view_dir, reflect)) ** material.spec)
+            specColor = np.array([spec_intensity * pointLight.color[2] / 255,
+                                  spec_intensity * pointLight.color[1] / 255,
+                                  spec_intensity * pointLight.color[0] / 255])
+
+
+            shadMat, shadInter = self.scene_intercept(intersect.point,  light_dir, intersect.sceneObject)
+            if shadInter is not None and shadInter.distance < np.linalg.norm(np.subtract(pointLight.position, intersect.point)):
+                shadow_intensity = 1
+
+            pLightColor = np.add( pLightColor, (1 - shadow_intensity) * (diffuseColor + specColor))
 
         
         if material.matType == OPAQUE:
             # Formula de iluminacion, PHONG
-            finalColor = (ambientColor + (1 - shadow_intensity) * (diffuseColor + specColor))
+            finalColor = (ambientColor + dirLightColor + pLightColor)
+
+            if material.texture and intersect.texCoords:
+
+                texColor = material.texture.getColor(intersect.texCoords[0], intersect.texCoords[1])
+
+                finalColor *= np.array([texColor[2] / 255,
+                                        texColor[1] / 255,
+                                        texColor[0] / 255])
+
+
         elif material.matType == REFLECTIVE:
             reflect = reflectVector(intersect.normal, np.array(direction) * -1)
             reflectColor = self.castRay(intersect.point, reflect, intersect.sceneObject, recursion + 1)
@@ -358,7 +408,7 @@ class Raytracer(object):
                                      reflectColor[1] / 255,
                                      reflectColor[0] / 255])
 
-            finalColor = reflectColor + (1 - shadow_intensity) * specColor
+            finalColor = reflectColor
 
         elif material.matType == TRANSPARENT:
 
@@ -382,7 +432,7 @@ class Raytracer(object):
                                          refractColor[0] / 255])
 
 
-            finalColor = reflectColor * kr + refractColor * (1 - kr) + (1 - shadow_intensity) * specColor
+            finalColor = reflectColor * kr + refractColor * (1 - kr)
 
 
 
